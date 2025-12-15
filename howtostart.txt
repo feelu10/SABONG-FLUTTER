@@ -1,0 +1,7 @@
+flutter clean
+flutter pub get
+flutter build apk --debug
+
+insert emulator
+flutter devices to ensure emulator or phone debug mode
+flutter run --use-application-binary android/app/build/outputs/flutter-apk/app-debug.apk

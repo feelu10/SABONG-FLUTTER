@@ -18,6 +18,7 @@ class TicketPrintPage extends StatefulWidget {
 class _TicketPrintPageState extends State<TicketPrintPage> {
   String? receiptId = "Processing…";
   String? fightNumber = "Processing…";
+  String? eventName = "Processing…";   // ⭐ ADDED
   String? qrPath;
   bool isSubmitting = false;
   bool submitted = false;
@@ -27,8 +28,7 @@ class _TicketPrintPageState extends State<TicketPrintPage> {
   String? teller;
 
   String loaderText = "Connecting to printer…";
-  BlueThermalPrinter bluetooth = BlueThermalPrinter.instance;
-  BluetoothDevice? selectedPrinter;
+  final BlueThermalPrinter bluetooth = BlueThermalPrinter.instance;
 
   @override
   void initState() {
@@ -36,269 +36,236 @@ class _TicketPrintPageState extends State<TicketPrintPage> {
     _initAndPrint();
   }
 
+  // ----------------------------------------------------------
+  // MAIN FLOW
+  // ----------------------------------------------------------
   Future<void> _initAndPrint() async {
     try {
       setState(() => loaderText = "Loading settings…");
-      await _getApiUrlAndPrinterAddress();
+      await _loadApiUrlAndPrinter();
 
-      setState(() => loaderText = "Connecting to printer…");
-      await _connectPrinterOnce();
+      setState(() => loaderText = "Checking printer status…");
+      await _connectWithPing();
+
+      if (!(await bluetooth.isConnected ?? false)) {
+        throw Exception("Printer connection failed.");
+      }
 
       setState(() => loaderText = "Submitting ticket…");
       bool ok = await _submitToBackend();
-      if (!ok) {
-        setState(() => loaderText = "Submission failed.");
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text("Failed to submit ticket."), backgroundColor: Colors.red),
-        );
-        await Future.delayed(const Duration(seconds: 2));
-        if (!mounted) return;
-        Navigator.of(context).pop();
-        return;
-      }
+      if (!ok) return _failAndExit("Failed to submit ticket.");
 
       setState(() => loaderText = "Printing ticket…");
       await _printTicket();
 
-      setState(() => loaderText = "Done!");
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Printed successfully!")),
       );
+
       await Future.delayed(const Duration(milliseconds: 800));
-      if (mounted) Navigator.of(context).pop();
+      if (mounted) Navigator.pop(context);
 
     } catch (e) {
-      setState(() {
-        loaderText = "Print Error: $e";
-        lastPrintError = e.toString();
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Print failed: $e"), backgroundColor: Colors.red),
-      );
-      await Future.delayed(const Duration(seconds: 2));
-      if (mounted) Navigator.of(context).pop();
+      _failAndExit(e.toString());
     }
   }
 
-  Future<void> _getApiUrlAndPrinterAddress() async {
+  Future<void> _failAndExit(String msg) async {
+    setState(() => lastPrintError = msg);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), backgroundColor: Colors.red),
+    );
+    await Future.delayed(const Duration(seconds: 2));
+    if (mounted) Navigator.pop(context);
+  }
+
+  // ----------------------------------------------------------
+  // LOAD SAVED SETTINGS
+  // ----------------------------------------------------------
+  Future<void> _loadApiUrlAndPrinter() async {
     final prefs = await SharedPreferences.getInstance();
+
     apiUrl = prefs.getString('api_url');
     savedPrinterAddress = prefs.getString('printer_address');
-  }
 
-  Future<void> _connectPrinterOnce() async {
-    bool isConnected = (await bluetooth.isConnected) ?? false;
-    if (!isConnected) {
-      final devices = await bluetooth.getBondedDevices();
-      BluetoothDevice? device;
-      if (savedPrinterAddress != null && savedPrinterAddress!.isNotEmpty) {
-        device = devices.firstWhere(
-          (d) => d.address == savedPrinterAddress,
-          orElse: () => BluetoothDevice('', ''),
-        );
-        if ((device.name ?? '').isEmpty) device = null;
-      }
-      device ??= devices.firstWhere(
-        (d) => (d.name ?? '').toLowerCase().contains('pt'),
-        orElse: () => BluetoothDevice('', ''),
-      );
-      if ((device.name ?? '').isNotEmpty) {
-        print('[PRINTER] Connecting to: ${device.name} (${device.address})');
-        await bluetooth.connect(device);
-        print('[PRINTER] Connected!');
-      } else {
-        print('[PRINTER] No PT printer found!');
-        throw Exception('No PT printer found!');
-      }
+    if (savedPrinterAddress == null) {
+      throw Exception("No printer selected. Go to Settings → Printer.");
     }
   }
 
-  @override
-  void dispose() {
-    bluetooth.disconnect(); // Only disconnect ONCE on dispose
-    super.dispose();
+  // ----------------------------------------------------------
+  // PING LOGIC
+  // ----------------------------------------------------------
+  Future<bool> _pingPrinter(BluetoothDevice device) async {
+    try {
+      await bluetooth.connect(device).timeout(
+        const Duration(seconds: 3),
+        onTimeout: () => throw Exception("Printer timeout"),
+      );
+
+      await bluetooth.disconnect();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
-  Future<bool> _checkUserStatus() async {
-    final prefs = await SharedPreferences.getInstance();
-    final username = prefs.getString('username');
-    final api = prefs.getString('api_url');
+  // ----------------------------------------------------------
+  // CONNECT WITH PING
+  // ----------------------------------------------------------
+  Future<void> _connectWithPing() async {
+    bool connected = (await bluetooth.isConnected) ?? false;
+    if (connected) return;
 
-    if (username == null || api == null) return true; // assume safe if missing
-
-    final res = await http.post(
-      Uri.parse('$api/api/check-user-status'),
-      headers: {'Content-Type': 'application/json'},
-      body: jsonEncode({'username': username}),
+    final bonded = await bluetooth.getBondedDevices();
+    final matched = bonded.firstWhere(
+      (d) => d.address == savedPrinterAddress,
+      orElse: () => BluetoothDevice('', ''),
     );
 
-    if (res.statusCode == 403 || res.statusCode == 404) {
-      final preservedApi = api;
-      await prefs.clear();
-      await prefs.setString('api_url', preservedApi);
-
-      if (!mounted) return false;
-      await showDialog(
-        context: context,
-        builder: (_) => AlertDialog(
-          title: const Text("Account Issue"),
-          content: const Text("Your account is either deactivated or does not exist. You will be logged out."),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Navigator.pushNamedAndRemoveUntil(context, '/login', (_) => false);
-              },
-              child: const Text("OK"),
-            ),
-          ],
-        ),
-      );
-      return false;
+    if ((matched.address ?? "").isEmpty) {
+      throw Exception("Saved printer not found.");
     }
 
-    return true;
+
+    bool alive = await _pingPrinter(matched);
+    if (!alive) {
+      throw Exception("Printer is OFF or unreachable.");
+    }
+
+    try {
+      await bluetooth.connect(matched);
+    } catch (_) {
+      throw Exception("Could not connect to printer: ${matched.name}");
+    }
   }
 
+  // ----------------------------------------------------------
+  // SUBMIT BET — RECEIVE EVENT NAME
+  // ----------------------------------------------------------
   Future<bool> _submitToBackend() async {
     if (isSubmitting || apiUrl == null || submitted) return false;
-    print('[BET] Start _submitToBackend at ${DateTime.now()}');
-    final startAll = DateTime.now().millisecondsSinceEpoch;
-
-    bool ok = await _checkUserStatus();
-    if (!ok) {
-      print('[BET] _checkUserStatus failed at ${DateTime.now()}');
-      return false;
-    }
 
     setState(() => isSubmitting = true);
 
     try {
       final t = widget.tickets[0];
-      final fightId = t['fight_id'];
-      if (fightId == null) {
-        if (!mounted) return false;
-        setState(() => isSubmitting = false);
-        print('[BET] No fightId at ${DateTime.now()}');
-        return false;
-      }
-      final uri = Uri.parse('$apiUrl/api/bet');
-      print('[BET] POST to $uri at ${DateTime.now()}');
+      final prefs = await SharedPreferences.getInstance();
 
-      final startPost = DateTime.now().millisecondsSinceEpoch;
       final res = await http.post(
-        uri,
+        Uri.parse('$apiUrl/api/bet'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
-          'fight_id': fightId,
-          'user': (await SharedPreferences.getInstance()).getString('username') ?? 'teller',
+          'fight_id': t['fight_id'],
+          'user': prefs.getString('username') ?? 'teller',
           'side': t['side'],
           'amount': t['amount'],
         }),
       );
-      final endPost = DateTime.now().millisecondsSinceEpoch;
-
-      print('[BET] API response at ${DateTime.now()}');
-      print('[BET] API POST duration: ${(endPost - startPost) / 1000.0} seconds');
-
-      if (!mounted) return false;
 
       if (res.statusCode == 200) {
-        final resp = jsonDecode(res.body);
-        setState(() {
-          receiptId = resp['receipt_id']?.toString() ?? '-';
-          fightNumber = t['fight_number']?.toString() ?? '-';
-          qrPath = resp['qr_path']?.toString();
-          submitted = true;
-          teller = resp['teller']?.toString() ?? '';
-        });
+        final data = jsonDecode(res.body);
 
-        final endAll = DateTime.now().millisecondsSinceEpoch;
-        print('[BET] _submitToBackend total duration: ${(endAll - startAll) / 1000.0} seconds');
+        receiptId = data['receipt_id']?.toString();
+        qrPath = data['qr_path'];
+        teller = prefs.getString('username') ?? "";
+        fightNumber = t['fight_number']?.toString();
+
+        // ⭐ EVENT NAME
+        eventName = data['event_name']?.toString() ?? "Event";
+
+        submitted = true;
         return true;
-      } else {
-        if (!mounted) return false;
-        setState(() => receiptId = "Error!");
-        print('[BET] API Error status ${res.statusCode} at ${DateTime.now()}');
-        return false;
       }
-    } catch (e) {
-      if (!mounted) return false;
-      setState(() => receiptId = "Error!");
-      print('[BET] Exception: $e at ${DateTime.now()}');
+
+      return false;
+
+    } catch (_) {
       return false;
     } finally {
-      if (mounted) {
-        setState(() => isSubmitting = false);
-      }
+      setState(() => isSubmitting = false);
     }
   }
 
+  // ----------------------------------------------------------
+  // PRINT TICKET (SAFE, NO OVERFLOW)
+  // ----------------------------------------------------------
   Future<void> _printTicket() async {
-    setState(() => lastPrintError = null);
+    if (!((await bluetooth.isConnected) ?? false)) {
+      throw Exception("Printer disconnected.");
+    }
+
+    // Force ASCII code page (fixes Chinese-like symbols)
+    await bluetooth.writeBytes(Uint8List.fromList([27, 116, 0])); // ESC t 0
+
+    await bluetooth.printCustom("OFFICIAL BETTING RECEIPT", 1, 1);
+    await bluetooth.printCustom("--------------------------------", 1, 1);
+
+    // Event safe name
+    final safeEvent = (eventName ?? "").length > 25
+        ? eventName!.substring(0, 25)
+        : eventName;
+
+    await bluetooth.printCustom("Event: $safeEvent", 1, 0);
+    await bluetooth.printCustom("Fight #: $fightNumber", 1, 0);
+    await bluetooth.printCustom("Teller: ${teller ?? ''}", 1, 0);
+    await bluetooth.printCustom("Receipt: $receiptId", 1, 0);
+
+    await bluetooth.printCustom("--------------------------------", 1, 1);
+
+    // ==============================
+    //  SAFE TICKET PRINT LOOP
+    // ==============================
+    for (var t in widget.tickets) {
+      String side = t['side'].toString().toUpperCase();
+      String amount = t['amount'].toString();
+
+      // Force ASCII before printing every line (super safe)
+      await bluetooth.writeBytes(Uint8List.fromList([27, 116, 0]));
+
+      // NOTE: Using PHP instead of ₱ to avoid Unicode issues
+      await bluetooth.printCustom("$side   PHP $amount", 1, 0);
+    }
+
+    await bluetooth.printCustom("--------------------------------", 1, 1);
+    await bluetooth.printCustom("${_friendlyNow()}", 1, 0);
+
+    await _printQrCode();
+
+    await bluetooth.printNewLine();
+    await bluetooth.printNewLine();
+  }
+
+  // ----------------------------------------------------------
+  // PRINT QR
+  // ----------------------------------------------------------
+  Future<void> _printQrCode() async {
+    if (qrPath == null || apiUrl == null) return;
+
+    final url = qrPath!.startsWith("/")
+        ? "$apiUrl$qrPath"
+        : "$apiUrl/$qrPath";
 
     try {
-      bool isConnected = (await bluetooth.isConnected) ?? false;
-      if (!isConnected) throw Exception('Printer not connected!');
+      final res = await http.get(Uri.parse(url));
+      if (res.statusCode != 200) return;
 
-      await bluetooth.printCustom("GAC COCKPIT ARENA", 1, 1);
-      await bluetooth.printCustom("OFFICIAL BETTING RECEIPT", 1, 1);
-      await bluetooth.printCustom("--------------------------------", 1, 1);
+      img.Image? qr = img.decodeImage(res.bodyBytes);
+      if (qr == null) return;
 
-      await bluetooth.printCustom("Fight #: ${fightNumber ?? '-'}", 1, 1);
-      await bluetooth.printCustom("Teller: ${teller ?? '-'}", 1, 1);
-      await bluetooth.printCustom("Receipt: ${receiptId ?? '-'}", 1, 1);
-      await bluetooth.printCustom("--------------------------------", 1, 1);
+      img.Image resized = img.copyResize(qr, width: 250);
+      Uint8List png = Uint8List.fromList(img.encodePng(resized));
 
-      for (var t in widget.tickets) {
-        String side = (t['side'] ?? '').toString().toUpperCase();
-        String amount = t['amount'] != null ? t['amount'].toString() : '-';
-        await bluetooth.printCustom("${side.padRight(8)}     P${amount.padLeft(5)}", 1, 1);
+      if ((await bluetooth.isConnected) ?? false) {
+        await bluetooth.printImageBytes(png);
+        await bluetooth.printNewLine();
+        await bluetooth.printNewLine();
       }
-      await bluetooth.printCustom("--------------------------------", 1, 1);
-
-      await bluetooth.printCustom("Printed: ${_friendlyNow()}", 1, 1);
-
-      if (qrPath != null && apiUrl != null) {
-        String fullUrl = qrPath!.startsWith('/') ? '$apiUrl$qrPath' : '$apiUrl/$qrPath';
-        try {
-          final qrResponse = await http.get(Uri.parse(fullUrl));
-          await Future.delayed(const Duration(milliseconds: 100));
-          if (qrResponse.statusCode == 200) {
-            Uint8List imageBytes = qrResponse.bodyBytes;
-            img.Image? original = img.decodeImage(imageBytes);
-            if (original != null) {
-              await Future.delayed(const Duration(milliseconds: 100));
-              img.Image resized = img.copyResize(original, width: 250, height: 250);
-              Uint8List bigBytes = Uint8List.fromList(img.encodePng(resized));
-              bool isPrinterStillConnected = (await bluetooth.isConnected) ?? false;
-              if (isPrinterStillConnected) {
-                await bluetooth.printImageBytes(bigBytes);
-                await Future.delayed(const Duration(milliseconds: 100));
-                await bluetooth.printNewLine();
-              }
-            } else {
-              await bluetooth.printCustom("[QR Decode Failed]", 1, 1);
-            }
-          } else {
-            await bluetooth.printCustom("[QR Not Found]", 1, 1);
-          }
-        } catch (e) {
-          await bluetooth.printCustom("[QR Print Error]", 1, 1);
-        }
-      }
-
-      await bluetooth.printNewLine();
-      await bluetooth.printNewLine();
-    } catch (e) {
-      setState(() => lastPrintError = e.toString());
-      rethrow;
-    }
+    } catch (_) {}
   }
 
   String _friendlyNow() {
-    final now = DateTime.now();
-    final formatter = DateFormat('MMMM d, y • h:mm a');
-    return formatter.format(now);
+    return DateFormat('MMMM d, y • h:mm a').format(DateTime.now());
   }
 
   @override
@@ -316,14 +283,15 @@ class _TicketPrintPageState extends State<TicketPrintPage> {
               textAlign: TextAlign.center,
               style: const TextStyle(fontWeight: FontWeight.bold),
             ),
-            if (lastPrintError != null) ...[
-              const SizedBox(height: 20),
-              Text(
-                "Print Error: $lastPrintError",
-                style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
-                textAlign: TextAlign.center,
+            if (lastPrintError != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 20),
+                child: Text(
+                  "Error: $lastPrintError",
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: Colors.red),
+                ),
               ),
-            ],
           ],
         ),
       ),

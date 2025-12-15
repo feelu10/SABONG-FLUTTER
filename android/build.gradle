@@ -1,0 +1,7 @@
+subprojects {
+    afterEvaluate { p ->
+        if (p.plugins.hasPlugin("com.android.library")) {
+            p.android.compileSdk = 36
+        }
+    }
+}

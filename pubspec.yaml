@@ -1,4 +1,4 @@
-name: gac_arena
+name: D_OCBS
 description: "A new Flutter project."
 publish_to: 'none'
 
@@ -14,12 +14,20 @@ dependencies:
   shared_preferences: ^2.2.2
   http: ^1.2.1
   intl: ^0.19.0
+
+  # ⭐ Only these TWO Bluetooth libs allowed
   blue_thermal_printer: ^1.2.0
+  flutter_bluetooth_serial: ^0.4.0
+
   permission_handler: ^11.3.1
-  qr_flutter: ^4.1.0 
-  image: ^4.1.7 
+  qr_flutter: ^4.1.0
+  image: ^4.1.7
   mobile_scanner: ^3.5.0
   socket_io_client: ^2.0.3
+
+dependency_overrides:
+  flutter_blue: any
+  flutter_blue_plus: any
 
 dev_dependencies:
   flutter_test:

@@ -18,14 +18,16 @@ class TicketReprintPage extends StatefulWidget {
 class _TicketReprintPageState extends State<TicketReprintPage> {
   String? receiptId;
   String? fightNumber;
+  String? eventName;          // ⭐ EVENT NAME
   String? qrPath;
   String? teller;
   String? apiUrl;
+
   String? savedPrinterAddress;
   String? lastPrintError;
   bool _loading = true;
-  BlueThermalPrinter bluetooth = BlueThermalPrinter.instance;
-  BluetoothDevice? selectedPrinter;
+
+  final BlueThermalPrinter bluetooth = BlueThermalPrinter.instance;
 
   @override
   void initState() {
@@ -33,166 +35,206 @@ class _TicketReprintPageState extends State<TicketReprintPage> {
     _doAll();
   }
 
+  // ---------------------------------------------------------
+  // MAIN FLOW
+  // ---------------------------------------------------------
   Future<void> _doAll() async {
     final prefs = await SharedPreferences.getInstance();
     apiUrl = prefs.getString('api_url');
     savedPrinterAddress = prefs.getString('printer_address');
+
     final receipt = widget.bet['receipt_id']?.toString();
+
     if (apiUrl == null || receipt == null) {
       setState(() {
-        lastPrintError = "API URL or receipt missing.";
+        lastPrintError = "Missing API URL or receipt number.";
         _loading = false;
       });
       return;
     }
 
-    // Connect printer ONCE (no disconnect/reconnect in between)
-    await _connectPrinterOnce();
-    await _fetchTicketData(apiUrl!, receipt);
+    if (savedPrinterAddress == null) {
+      setState(() {
+        lastPrintError = "No printer selected. Set printer in Settings.";
+        _loading = false;
+      });
+      return;
+    }
 
-    if (!mounted) return;
     try {
-      await _printTicket(); // Printer is already connected
+      // 🚀 FAST re-connect to saved printer
+      await _connectPrinterFast();
+
+      // Fetch ticket details (with event name)
+      await _fetchTicketData(apiUrl!, receipt);
+
       if (!mounted) return;
+
+      // Print ticket
+      await _printTicket();
+
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Printed successfully!")),
+        const SnackBar(content: Text("Ticket reprinted successfully!")),
       );
+
       await Future.delayed(const Duration(seconds: 1));
-      if (mounted) Navigator.of(context).pop();
+      if (mounted) Navigator.pop(context);
+
     } catch (e) {
-      if (!mounted) return;
       setState(() => lastPrintError = e.toString());
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text("Print failed: $e"), backgroundColor: Colors.red),
       );
+
       await Future.delayed(const Duration(seconds: 2));
-      if (mounted) Navigator.of(context).pop();
+      if (mounted) Navigator.pop(context);
     }
   }
 
-  Future<void> _connectPrinterOnce() async {
-    bool isConnected = (await bluetooth.isConnected) ?? false;
-    if (!isConnected) {
-      final devices = await bluetooth.getBondedDevices();
-      BluetoothDevice? device;
-      if (savedPrinterAddress != null && savedPrinterAddress!.isNotEmpty) {
-        device = devices.firstWhere(
-          (d) => d.address == savedPrinterAddress,
-          orElse: () => BluetoothDevice('', ''),
-        );
-        if ((device.name ?? '').isEmpty) device = null;
-      }
-      device ??= devices.firstWhere(
-        (d) => (d.name ?? '').toLowerCase().contains('pt'),
-        orElse: () => BluetoothDevice('', ''),
-      );
-      if ((device.name ?? '').isNotEmpty) {
-        await bluetooth.connect(device);
-      } else {
-        throw Exception("PT-210 printer not found!");
-      }
+  // ---------------------------------------------------------
+  // 🚀 DIRECT FAST CONNECT TO SAVED PRINTER
+  // ---------------------------------------------------------
+  Future<void> _connectPrinterFast() async {
+    bool connected = (await bluetooth.isConnected) ?? false;
+    if (connected) return;
+
+    final devices = await bluetooth.getBondedDevices();
+    if (devices.isEmpty) {
+      throw Exception("No paired Bluetooth printers found.");
     }
+
+    final dev = devices.firstWhere(
+      (d) => d.address == savedPrinterAddress,
+      orElse: () => BluetoothDevice("", ""),
+    );
+
+    if ((dev.name ?? "").isEmpty) {
+      throw Exception("Saved printer not found. Set printer in Settings.");
+    }
+
+    await bluetooth.connect(dev);
+
+    bool ok = (await bluetooth.isConnected) ?? false;
+    if (!ok) throw Exception("Failed to connect to saved printer.");
   }
 
+  // ---------------------------------------------------------
+  // FETCH RECEIPT DATA (WITH EVENT NAME)
+  // ---------------------------------------------------------
   Future<void> _fetchTicketData(String apiUrl, String receipt) async {
-    final url = Uri.parse('$apiUrl/api/bet/receipt/$receipt');
-    final res = await http.get(url);
+    final res = await http.get(Uri.parse('$apiUrl/api/bet/receipt/$receipt'));
+
     if (res.statusCode == 200) {
       final data = jsonDecode(res.body);
+
       setState(() {
         receiptId = data['receipt_id'] ?? receipt;
-        fightNumber = data['fight_number']?.toString() ?? widget.bet['fight_number']?.toString() ?? '-';
+
+        fightNumber = data['fight_number']?.toString()
+            ?? widget.bet['fight_number']?.toString()
+            ?? '-';
+
+        eventName = data['event_name']?.toString() ?? "Event";   // ⭐ ADDED
+
         qrPath = data['qr_path']?.toString();
         teller = data['teller']?.toString() ?? '';
         _loading = false;
       });
     } else {
-      setState(() {
-        lastPrintError = "Could not fetch ticket info (404)";
-        _loading = false;
-      });
+      throw Exception("Unable to fetch ticket data.");
     }
   }
 
-  @override
-  void dispose() {
-    bluetooth.disconnect(); // Only disconnect once when page is disposed
-    super.dispose();
+  String cleanAmount(dynamic value) {
+    if (value == null) return "-";
+
+    try {
+      double n = double.parse(value.toString());
+      if (n == n.roundToDouble()) {
+        return n.toInt().toString(); 
+      } else {
+        return n.toString();
+      }
+    } catch (_) {
+      return value.toString();
+    }
   }
 
   Future<void> _printTicket() async {
-    setState(() => lastPrintError = null);
-    bool isConnected = (await bluetooth.isConnected) ?? false;
-    if (!isConnected) throw Exception('Printer not connected!');
+    bool ok = (await bluetooth.isConnected) ?? false;
+    if (!ok) throw Exception("Printer not connected.");
 
-    // HEADER
-    await bluetooth.printCustom("GAC COCKPIT ARENA", 1, 1);
+    // Force ASCII
+    await bluetooth.writeBytes(Uint8List.fromList([27, 116, 0]));
+
     await bluetooth.printCustom("OFFICIAL BETTING RECEIPT", 1, 1);
     await bluetooth.printCustom("--------------------------------", 1, 1);
 
-    // INFO
-    await bluetooth.printCustom("Fight #: ${fightNumber ?? '-'}", 1, 1);
-    await bluetooth.printCustom("Teller: ${teller ?? '-'}", 1, 1);
-    await bluetooth.printCustom("Receipt: ${receiptId ?? '-'}", 1, 1);
+    final safeEvent = (eventName ?? "").length > 25
+        ? eventName!.substring(0, 25)
+        : eventName ?? '';
+
+    await bluetooth.printCustom("Event: $safeEvent", 1, 0);
+    await bluetooth.printCustom("Fight #: ${fightNumber ?? '-'}", 1, 0);
+    await bluetooth.printCustom("Teller: ${teller ?? '-'}", 1, 0);
+    await bluetooth.printCustom("Receipt: ${receiptId ?? '-'}", 1, 0);
+
     await bluetooth.printCustom("--------------------------------", 1, 1);
 
-    // BET LIST
+    // CLEANED AMOUNT (NO .0 EVER)
     String side = (widget.bet['side'] ?? '').toString().toUpperCase();
-    String amount = widget.bet['amount'] != null ? widget.bet['amount'].toString() : '-';
-    await bluetooth.printCustom("${side.padRight(8)}     P${amount.padLeft(5)}", 1, 1);
+    String amount = cleanAmount(widget.bet['amount']);
+
+    await bluetooth.writeBytes(Uint8List.fromList([27, 116, 0]));
+    await bluetooth.printCustom("$side   PHP $amount", 1, 0);
+
     await bluetooth.printCustom("--------------------------------", 1, 1);
+    await bluetooth.printCustom("${_friendlyNow()}", 1, 0);
 
-    // TIME
-    await bluetooth.printCustom("Printed: ${_friendlyNow()}", 1, 1);
-
-    // QR CODE (always ensure /static/ prefix)
-    if (qrPath != null && apiUrl != null) {
-      String path = qrPath!;
-      if (!path.startsWith('/static')) {
-        if (path.startsWith('/')) {
-          path = '/static$path';
-        } else {
-          path = '/static/$path';
-        }
-      }
-      String fullUrl = apiUrl!;
-      if (fullUrl.endsWith('/')) fullUrl = fullUrl.substring(0, fullUrl.length - 1);
-      fullUrl = '$fullUrl$path';
-
-      try {
-        final qrResponse = await http.get(Uri.parse(fullUrl));
-        if (qrResponse.statusCode == 200) {
-          Uint8List imageBytes = qrResponse.bodyBytes;
-          img.Image? original = img.decodeImage(imageBytes);
-          if (original != null) {
-            img.Image resized = img.copyResize(original, width: 250, height: 250); // Use smallest readable size
-            Uint8List bigBytes = Uint8List.fromList(img.encodePng(resized));
-            bool isPrinterStillConnected = (await bluetooth.isConnected) ?? false;
-            if (isPrinterStillConnected) {
-              await bluetooth.printImageBytes(bigBytes);
-              await bluetooth.printNewLine();
-            }
-          } else {
-            await bluetooth.printCustom("[QR Decode Failed]", 1, 1);
-          }
-        } else {
-          await bluetooth.printCustom("[QR Not Found]", 1, 1);
-        }
-      } catch (e) {
-        await bluetooth.printCustom("[QR Print Error]", 1, 1);
-      }
-    }
+    await _printQrCode();
 
     await bluetooth.printNewLine();
     await bluetooth.printNewLine();
+  }
+
+  // ---------------------------------------------------------
+  // PRINT QR CODE
+  // ---------------------------------------------------------
+  Future<void> _printQrCode() async {
+    if (qrPath == null || apiUrl == null) return;
+
+    String p = qrPath!.replaceAll("\\", "/");
+    String fileName = p.contains("/") ? p.split("/").last : p;
+
+    String fullUrl = "$apiUrl/static/qr/$fileName";
+
+    try {
+      final qrRes = await http.get(Uri.parse(fullUrl));
+      if (qrRes.statusCode != 200) return;
+
+      Uint8List bytes = qrRes.bodyBytes;
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) return;
+
+      final resized = img.copyResize(decoded, width: 250);
+      final png = Uint8List.fromList(img.encodePng(resized));
+
+      if ((await bluetooth.isConnected) ?? false) {
+        await bluetooth.printImageBytes(png);
+        await bluetooth.printNewLine();
+        await bluetooth.printNewLine();
+      }
+    } catch (_) {}
   }
 
   String _friendlyNow() {
-    final now = DateTime.now();
-    final formatter = DateFormat('MMMM d, y • h:mm a');
-    return formatter.format(now);
+    return DateFormat('MMMM d, y • h:mm a').format(DateTime.now());
   }
 
+  // ---------------------------------------------------------
+  // UI LOADING + ERROR DISPLAY
+  // ---------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -201,23 +243,29 @@ class _TicketReprintPageState extends State<TicketReprintPage> {
         child: _loading
             ? Column(
                 mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(),
-                  const SizedBox(height: 20),
-                  const Text('Reprinting ticket...\nPlease wait.',
-                      textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold)),
+                children: const [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 20),
+                  Text(
+                    "Reprinting ticket...\nPlease wait.",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
                 ],
               )
             : lastPrintError != null
                 ? Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.error, color: Colors.red, size: 36),
-                      const SizedBox(height: 16),
+                      Icon(Icons.error, color: Colors.red, size: 36),
+                      SizedBox(height: 16),
                       Text(
-                        "Print Error: $lastPrintError",
-                        style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+                        "Print Error:\n$lastPrintError",
                         textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.red,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ],
                   )

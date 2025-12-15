@@ -1,11 +1,15 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
 import 'package:blue_thermal_printer/blue_thermal_printer.dart';
 import 'package:intl/intl.dart';
+
+// =========================================================
+//                 VOID BET SCANNER PAGE
+// =========================================================
 
 class VoidBetPage extends StatefulWidget {
   const VoidBetPage({Key? key}) : super(key: key);
@@ -44,8 +48,8 @@ class _VoidBetPageState extends State<VoidBetPage> {
     setState(() => _scanned = true);
 
     final receiptId = RegExp(r'\d+').stringMatch(code) ?? code;
-
     final uri = Uri.parse('$apiUrl/api/bet/void-receipt');
+
     String title = "Void Result";
     String message = "";
     bool success = false;
@@ -78,7 +82,6 @@ class _VoidBetPageState extends State<VoidBetPage> {
         message = data['message'] ?? "Bet successfully voided.";
         final ticket = data['ticket'];
 
-        // Print the voiding ticket immediately (no delay)
         if (ticket != null && mounted) {
           await Navigator.push(
             context,
@@ -99,12 +102,12 @@ class _VoidBetPageState extends State<VoidBetPage> {
     }
 
     if (!mounted) return;
+
     showDialog(
       context: context,
       barrierDismissible: false,
       builder: (_) => PopScope(
         canPop: false,
-        onPopInvoked: (didPop) {},
         child: AlertDialog(
           title: Text(title),
           content: Text(message),
@@ -148,6 +151,8 @@ class _VoidBetPageState extends State<VoidBetPage> {
               facing: CameraFacing.back,
             ),
           ),
+
+          // Center scanning frame
           Center(
             child: Container(
               width: 250,
@@ -158,6 +163,7 @@ class _VoidBetPageState extends State<VoidBetPage> {
               ),
             ),
           ),
+
           const Positioned(
             top: 40,
             left: 0,
@@ -169,6 +175,7 @@ class _VoidBetPageState extends State<VoidBetPage> {
               ),
             ),
           ),
+
           const Positioned(
             bottom: 36,
             left: 0,
@@ -186,7 +193,10 @@ class _VoidBetPageState extends State<VoidBetPage> {
   }
 }
 
-// ---- Instant printer, no artificial delay ----
+// =========================================================
+//           VOIDED TICKET PRINT PAGE (FULL FIX)
+// =========================================================
+
 class VoidTicketPrintPage extends StatefulWidget {
   final Map ticket;
   const VoidTicketPrintPage({super.key, required this.ticket});
@@ -208,64 +218,106 @@ class _VoidTicketPrintPageState extends State<VoidTicketPrintPage> {
 
   Future<void> _printImmediately() async {
     try {
-      await _getSavedPrinterAddress();
-      await _tryReconnectToSavedPrinter();
-      await _printVoidTicket();
-      if (mounted) Navigator.of(context).pop(); // Pop right after printing!
+      await _loadSavedPrinter();
+
+      if (savedPrinterAddress == null) {
+        throw Exception("No printer selected. Set printer in Settings.");
+      }
+
+      await _connectPrinterFast();      // saved-only connect
+      await _printVoidSlip();           // print slip
+
+      if (mounted) Navigator.pop(context);
+
     } catch (e) {
       setState(() => lastPrintError = e.toString());
     }
   }
 
-  Future<void> _getSavedPrinterAddress() async {
+  Future<void> _loadSavedPrinter() async {
     final prefs = await SharedPreferences.getInstance();
     savedPrinterAddress = prefs.getString('printer_address');
   }
 
-  Future<void> _tryReconnectToSavedPrinter() async {
-    bool isConnected = (await bluetooth.isConnected) ?? false;
-    if (isConnected) return;
-    final devices = await bluetooth.getBondedDevices();
+  // ---------------------------------------------------------
+  //        SUPER FAST PRINTER CONNECT (STRICT SAVED)
+  // ---------------------------------------------------------
+  Future<void> _connectPrinterFast() async {
+    bool connected = (await bluetooth.isConnected) ?? false;
+    if (connected) return;
 
-    BluetoothDevice? device;
-    // 1. Try saved address
-    if (savedPrinterAddress != null && savedPrinterAddress!.isNotEmpty) {
-      device = devices.firstWhere(
-        (d) => d.address == savedPrinterAddress,
-        orElse: () => BluetoothDevice('', ''),
-      );
-      if ((device.name ?? '').isEmpty) device = null;
+    final devices = await bluetooth.getBondedDevices();
+    if (devices.isEmpty) {
+      throw Exception("No paired Bluetooth printers found.");
     }
-    // 2. Fallback to device with 'pt' in the name.
-    device ??= devices.firstWhere(
-      (d) => (d.name ?? '').toLowerCase().contains('pt'),
-      orElse: () => BluetoothDevice('', ''),
+
+    final dev = devices.firstWhere(
+      (d) => d.address == savedPrinterAddress,
+      orElse: () => BluetoothDevice("", ""),
     );
-    if ((device.name ?? '').isEmpty) {
-      throw Exception("PT-210 printer not found!");
+
+    if ((dev.name ?? "").isEmpty) {
+      throw Exception("Saved printer not found. Set printer in Settings.");
     }
-    await bluetooth.connect(device);
+
+    await bluetooth.connect(dev);
+
+    bool ok = (await bluetooth.isConnected) ?? false;
+    if (!ok) throw Exception("Failed to connect to saved printer.");
   }
 
-  Future<void> _printVoidTicket() async {
+  @override
+  void dispose() {
+    // Keep connection for instant next print
+    super.dispose();
+  }
+
+  // ---------------------------------------------------------
+  //                   PRINT VOIDED SLIP
+  // ---------------------------------------------------------
+  Future<void> _printVoidSlip() async {
     final t = widget.ticket;
     final now = DateFormat('y-MM-dd h:mm a').format(DateTime.now());
 
-    bool isConnected = (await bluetooth.isConnected) ?? false;
-    if (!isConnected) throw Exception("Printer not connected.");
+    if (!((await bluetooth.isConnected) ?? false)) {
+      throw Exception("Printer not connected.");
+    }
+
+    // ---------- FORMAT EVENT NAME FOR 58mm PAPER ----------
+    String eventName = (t['event_name'] ?? '').toString().trim();
+
+    // MAX 25 CHAR PER LINE
+    List<String> eventLines = [];
+    while (eventName.length > 25) {
+      eventLines.add(eventName.substring(0, 25));
+      eventName = eventName.substring(25);
+    }
+    if (eventName.isNotEmpty) eventLines.add(eventName);
 
     await bluetooth.printNewLine();
-    await bluetooth.printCustom("GAC COCKPIT ARENA", 1, 1);
     await bluetooth.printCustom("VOIDED BET SLIP", 1, 1);
     await bluetooth.printCustom("--------------------------------", 1, 1);
-    await bluetooth.printCustom("RECEIPT: ${t['receipt_id'] ?? '-'}", 1, 1);
-    await bluetooth.printCustom("FIGHT #: ${t['fight_number'] ?? '-'}", 1, 1);
-    await bluetooth.printCustom("SIDE: ${(t['side'] ?? '-').toString().toUpperCase()}", 1, 1);
-    await bluetooth.printCustom("AMOUNT: P${t['amount'] ?? '-'}", 1, 1);
-    await bluetooth.printCustom("TELLER: ${t['teller'] ?? '-'}", 1, 1);
-    await bluetooth.printCustom("DATE: ${t['date'] ?? now}", 1, 1);
+
+    // ⭐ IF only one line → print as "EVENT: Name"
+    if (eventLines.length == 1) {
+      await bluetooth.printCustom("EVENT: ${eventLines[0]}", 1, 0);
+    } else {
+      // ⭐ MULTI-LINE EVENT
+      await bluetooth.printCustom("EVENT:", 1, 0);
+      for (String line in eventLines) {
+        await bluetooth.printCustom("  $line", 1, 0);
+      }
+    }
+
+    await bluetooth.printCustom("RECEIPT: ${t['receipt_id']}", 1, 0);
+    await bluetooth.printCustom("FIGHT #: ${t['fight_number']}", 1, 0);
+    await bluetooth.printCustom("SIDE: ${(t['side'] ?? '-').toString().toUpperCase()}", 1, 0);
+    await bluetooth.printCustom("AMOUNT: PHP ${t['amount']}", 1, 0);
+    await bluetooth.printCustom("TELLER: ${t['teller']}", 1, 0);
+    await bluetooth.printCustom("DATE: ${t['date'] ?? now}", 1, 0);
+
     await bluetooth.printCustom("--------------------------------", 1, 1);
-    await bluetooth.printCustom("Printed: $now", 1, 1);
+
     await bluetooth.printNewLine();
     await bluetooth.printNewLine();
   }
@@ -273,54 +325,59 @@ class _VoidTicketPrintPageState extends State<VoidTicketPrintPage> {
   @override
   Widget build(BuildContext context) {
     final t = widget.ticket;
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Voided Ticket'),
+        title: const Text("Voided Ticket"),
         backgroundColor: Colors.red[900],
       ),
       body: Center(
         child: lastPrintError == null
             ? Column(
                 mainAxisSize: MainAxisSize.min,
-                children: [
-                  const CircularProgressIndicator(),
-                  const SizedBox(height: 18),
-                  Text(
-                    'Printing Voided Ticket...',
-                    style: TextStyle(fontWeight: FontWeight.bold),
-                  ),
+                children: const [
+                  CircularProgressIndicator(),
+                  SizedBox(height: 16),
+                  Text("Printing voided ticket...",
+                      style: TextStyle(fontWeight: FontWeight.bold)),
                 ],
               )
             : Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Icon(Icons.cancel, color: Colors.red, size: 40),
+                  const Icon(Icons.error, color: Colors.red, size: 40),
                   const SizedBox(height: 10),
-                  Text("BET VOIDED", style: TextStyle(color: Colors.red[800], fontWeight: FontWeight.bold, fontSize: 20)),
-                  const Divider(height: 24, thickness: 2),
-                  Text("Receipt #: ${t['receipt_id']}", style: const TextStyle(fontSize: 16)),
-                  if (t['fight_number'] != null)
-                    Text("Fight #: ${t['fight_number']}"),
-                  if (t['side'] != null)
-                    Text("Side: ${t['side']}".toUpperCase()),
-                  if (t['amount'] != null)
-                    Text("Amount: ₱${t['amount']}"),
-                  if (t['teller'] != null)
-                    Text("Teller: ${t['teller']}"),
-                  if (t['date'] != null && t['date'] != "")
-                    Text("Date: ${t['date']}"),
-                  const SizedBox(height: 15),
+                  Text(
+                    "BET VOIDED",
+                    style: TextStyle(
+                      color: Colors.red,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 20,
+                    ),
+                  ),
+
+                  const Divider(height: 24),
+
+                  Text("Receipt #: ${t['receipt_id']}"),
+                  if (t['fight_number'] != null) Text("Fight #: ${t['fight_number']}"),
+                  if (t['side'] != null) Text("Side: ${t['side']}".toUpperCase()),
+                  if (t['amount'] != null) Text("Amount: ₱${t['amount']}"),
+                  if (t['teller'] != null) Text("Teller: ${t['teller']}"),
+                  if (t['date'] != null && t['date'] != "") Text("Date: ${t['date']}"),
+
+                  const SizedBox(height: 20),
                   Text(
                     "Printer error:\n$lastPrintError",
-                    style: const TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
                     textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        color: Colors.red, fontWeight: FontWeight.bold),
                   ),
-                  const SizedBox(height: 30),
-                  ElevatedButton.icon(
-                    icon: const Icon(Icons.arrow_back),
-                    label: const Text('Done'),
+
+                  const SizedBox(height: 20),
+                  ElevatedButton(
                     onPressed: () => Navigator.pop(context),
-                  ),
+                    child: const Text("Done"),
+                  )
                 ],
               ),
       ),

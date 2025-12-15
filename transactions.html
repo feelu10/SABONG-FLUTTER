@@ -1,0 +1,347 @@
+{% extends "base.html" %}
+{% block content %}
+
+<!-- PAGE TITLE -->
+<div class="mb-10">
+    <h1 class="text-4xl font-heading font-bold text-gray-900">Transaction Claims Dashboard</h1>
+    <p class="text-gray-500 mt-1">Real-time overview of winnings, agents, QR receipts, and pending claims</p>
+</div>
+
+<!-- ============================================================== -->
+<!--                     SUMMARY CARDS (TOP)                        -->
+<!-- ============================================================== -->
+
+<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-10">
+
+    <!-- Claimed -->
+    <div class="glass-card p-6 rounded-xl border-l-4 border-green-500 shadow-md hover:shadow-xl transition">
+        <div class="flex items-center gap-4">
+            <div class="w-12 h-12 bg-green-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-wallet text-green-600 text-xl"></i>
+            </div>
+            <div>
+                <p class="text-gray-600 text-sm">Total Claimed Winnings</p>
+                <h3 class="text-3xl font-bold text-green-600">
+                    ₱{{ "{:,.2f}".format(total_claimed or 0) }}
+                </h3>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unclaimed -->
+    <div class="glass-card p-6 rounded-xl border-l-4 border-red-500 shadow-md hover:shadow-xl transition">
+        <div class="flex items-center gap-4">
+            <div class="w-12 h-12 bg-red-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-exclamation-circle text-red-600 text-xl"></i>
+            </div>
+            <div>
+                <p class="text-gray-600 text-sm">Total Unclaimed Winnings</p>
+                <h3 class="text-3xl font-bold text-red-600">
+                    ₱{{ "{:,.2f}".format(total_unclaimed or 0) }}
+                </h3>
+            </div>
+        </div>
+    </div>
+
+    <!-- Refunds -->
+    <div class="glass-card p-6 rounded-xl border-l-4 border-blue-500 shadow-md hover:shadow-xl transition">
+        <div class="flex items-center gap-4">
+            <div class="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-undo text-blue-600 text-xl"></i>
+            </div>
+            <div>
+                <p class="text-gray-600 text-sm">Refunds (Draw/Cancelled)</p>
+                <h3 class="text-3xl font-bold text-blue-500">
+                    ₱{{ "{:,.2f}".format(total_refunds or 0) }}
+                </h3>
+            </div>
+        </div>
+    </div>
+
+    <!-- Top Agent -->
+    <div class="glass-card p-6 rounded-xl border-l-4 border-purple-500 shadow-md hover:shadow-xl transition">
+        <div class="flex items-center gap-4">
+            <div class="w-12 h-12 bg-purple-100 rounded-full flex items-center justify-center">
+                <i class="fas fa-user-tie text-purple-600 text-xl"></i>
+            </div>
+            <div>
+                <p class="text-gray-600 text-sm">Top Agent (Unclaimed)</p>
+
+                {% if agent_stats and agent_stats[0] %}
+                    <h3 class="text-xl font-bold text-purple-700">
+                        {{ agent_stats[0].agent_name }}
+                    </h3>
+                    <p class="text-xs text-gray-600 mt-1">
+                        {{ agent_stats[0].unclaimed_count }} bets • 
+                        ₱{{ "{:,.2f}".format(agent_stats[0].unclaimed_amount) }}
+                    </p>
+                {% else %}
+                    <h3 class="text-xl font-bold text-gray-400">No Data</h3>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- ============================================================== -->
+<!--               AGENT BREAKDOWN TABLE (MIDDLE)                   -->
+<!-- ============================================================== -->
+
+<div class="glass-card p-6 rounded-xl mb-12 shadow-lg">
+    <div class="flex justify-between items-center mb-4">
+        <h2 class="text-2xl font-heading font-bold text-gray-900">Agent Breakdown</h2>
+        <span class="px-3 py-1 bg-purple-100 text-purple-700 rounded-full text-xs shadow-sm">
+            {{ agent_stats|length }} Agents
+        </span>
+    </div>
+
+    <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-300 text-sm">
+            <thead class="bg-gray-100">
+                <tr>
+                    <th class="px-4 py-3 text-left font-semibold text-gray-700">Agent</th>
+                    <th class="px-4 py-3 text-center font-semibold text-gray-700">Bettors</th>
+                    <th class="px-4 py-3 text-center font-semibold text-gray-700">Unclaimed</th>
+                    <th class="px-4 py-3 text-right font-semibold text-gray-700">Unclaimed Amount</th>
+                    <th class="px-4 py-3 text-right font-semibold text-gray-700">Claimed Amount</th>
+                </tr>
+            </thead>
+
+            <tbody class="bg-white divide-y divide-gray-200">
+                {% for a in agent_stats %}
+                <tr class="hover:bg-gray-50">
+                    <td class="px-4 py-3 font-medium text-gray-800">{{ a.agent_name }}</td>
+                    <td class="px-4 py-3 text-center">{{ a.bettor_count or 0 }}</td>
+                    <td class="px-4 py-3 text-center">{{ a.unclaimed_count or 0 }}</td>
+                    <td class="px-4 py-3 text-right text-red-600 font-semibold">
+                        ₱{{ "{:,.2f}".format(a.unclaimed_amount or 0) }}
+                    </td>
+                    <td class="px-4 py-3 text-right text-green-600 font-semibold">
+                        ₱{{ "{:,.2f}".format(a.claimed_amount or 0) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+
+        </table>
+    </div>
+</div>
+
+<!-- ============================================================== -->
+<!--                UNCLAIMED FIGHTS + CLICKABLE QR                 -->
+<!-- ============================================================== -->
+
+<div class="glass-card p-6 rounded-xl shadow-lg">
+
+    <div class="flex justify-between items-center mb-6">
+        <h2 class="text-2xl font-heading font-bold text-gray-900">Unclaimed Winnings per Fight</h2>
+        <span class="px-3 py-1 bg-blue-100 text-blue-700 text-xs rounded-full">
+            {{ fights_with_unclaimed|length }} Fights
+        </span>
+    </div>
+
+    {% if not fights_with_unclaimed %}
+        <div class="py-16 text-center text-gray-500">
+            <i class="fas fa-check-circle text-green-600 text-4xl mb-3"></i>
+            <p class="text-lg font-medium">All winnings have been claimed.</p>
+        </div>
+    {% endif %}
+
+    <div class="space-y-4">
+        {% for fight in fights_with_unclaimed %}
+
+        <div class="rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+
+            <!-- Accordion Header -->
+            <button onclick="toggleAccordion('fight-{{ fight.id }}')"
+                    class="w-full flex justify-between items-center px-5 py-4 bg-gray-50 hover:bg-gray-100 transition">
+
+                <div class="flex items-center gap-3">
+                    <i class="fas fa-gamepad text-cockpit-primary"></i>
+
+                    <span class="text-lg font-bold text-cockpit-primary">
+                        Fight #{{ fight.fight_number }}
+                    </span>
+
+                    {% if fight.result %}
+                    <span class="px-2 py-1 text-xs rounded-full font-semibold
+                        {% if fight.result=='meron' %} bg-red-100 text-red-700
+                        {% elif fight.result=='wala' %} bg-blue-100 text-blue-700
+                        {% elif fight.result=='draw' %} bg-yellow-200 text-yellow-800
+                        {% endif %}">
+                        {{ fight.result|capitalize }}
+                    </span>
+                    {% endif %}
+                </div>
+
+                <i id="icon-fight-{{ fight.id }}" class="fas fa-chevron-down text-gray-600 transition-transform duration-300"></i>
+            </button>
+
+            <!-- Accordion Content -->
+            <div id="fight-{{ fight.id }}" class="hidden overflow-hidden transition-all duration-300">
+
+                <div class="overflow-x-auto">
+                    <table class="min-w-full divide-y divide-gray-200 text-sm">
+                        <thead class="bg-gray-100">
+                            <tr>
+                                <th class="px-4 py-3 text-left font-semibold text-gray-700">Receipt</th>
+                                <th class="px-4 py-3 text-left font-semibold text-gray-700">Nickname</th>
+                                <th class="px-4 py-3 text-left font-semibold text-gray-700">Side</th>
+                                <th class="px-4 py-3 text-right font-semibold text-gray-700">Amount</th>
+                                <th class="px-4 py-3 text-right font-semibold text-gray-700">Payout</th>
+                            </tr>
+                        </thead>
+
+                        <tbody class="bg-white divide-y divide-gray-200">
+
+                            {% for bet in unclaimed_bets_by_fight[fight.id] %}
+                            <tr class="hover:bg-gray-50">
+
+                                <!-- CLICKABLE RECEIPT → QR MODAL -->
+                                <td class="px-4 py-3 font-mono text-blue-600 underline cursor-pointer"
+                                    onclick="openQrModal(
+                                        '{{ bet.receipt_id }}',
+                                        '{{ bet.qr_filename or "" }}',
+                                        '{{ bet.amount }}',
+                                        '{{ bet.payout }}'
+                                    )">
+                                    {{ bet.receipt_id }}
+                                </td>
+
+                                <td class="px-4 py-3">{{ bet.nickname or '—' }}</td>
+
+                                <td class="px-4 py-3">
+                                    <span class="px-2 py-1 text-xs rounded-full font-semibold
+                                        {% if bet.side=='meron' %} bg-red-100 text-red-700
+                                        {% else %} bg-blue-100 text-blue-700 {% endif %}">
+                                        {{ bet.side }}
+                                    </span>
+                                </td>
+
+                                <td class="px-4 py-3 text-right">₱{{ "{:,.2f}".format(bet.amount or 0) }}</td>
+
+                                <td class="px-4 py-3 text-right font-semibold
+                                    {% if bet.payout > bet.amount %} text-green-600
+                                    {% else %} text-gray-700 {% endif %}">
+                                    ₱{{ "{:,.2f}".format(bet.payout or 0) }}
+                                </td>
+
+                            </tr>
+                            {% endfor %}
+
+                        </tbody>
+                    </table>
+                </div>
+
+            </div>
+        </div>
+
+        {% endfor %}
+    </div>
+
+</div>
+
+
+<!-- ============================================================== -->
+<!--                           QR MODAL (FIXED)                     -->
+<!-- ============================================================== -->
+
+<div id="qrModal"
+     class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center p-4"
+     style="z-index: 99999 !important;">
+
+    <div class="bg-white w-full max-w-md rounded-xl p-6 shadow-2xl relative">
+
+        <!-- Close button -->
+        <button onclick="closeQrModal()" 
+                class="absolute top-3 right-3 text-gray-500 hover:text-black cursor-pointer">
+            <i class="fas fa-times text-lg"></i>
+        </button>
+
+        <h3 class="text-xl font-bold mb-3 text-gray-800">Receipt Details</h3>
+
+        <p class="text-sm text-gray-600 mb-4" id="qrModalReceipt"></p>
+
+        <!-- QR IMAGE -->
+        <div id="qrModalImgWrapper" class="text-center mb-4"></div>
+
+        <div class="bg-gray-50 p-4 rounded-lg text-sm space-y-2">
+            <p><strong>Amount:</strong> ₱<span id="qrModalAmount"></span></p>
+            <p><strong>Payout:</strong> ₱<span id="qrModalPayout"></span></p>
+        </div>
+
+    </div>
+</div>
+
+<!-- ============================================================== -->
+<!--                        PAGE SCRIPTS                            -->
+<!-- ============================================================== -->
+
+<script>
+function toggleAccordion(id) {
+    const elem = document.getElementById(id);
+    const icon = document.getElementById("icon-" + id);
+    elem.classList.toggle("hidden");
+    icon.classList.toggle("rotate-180");
+}
+
+// ==========================================================
+// OPEN QR MODAL
+// ==========================================================
+function openQrModal(receipt, qrFile, amount, payout) {
+
+    if (!qrFile || qrFile.trim() === "") {
+        qrFile = receipt + ".png";
+        console.log("Generated QR File:", qrFile);
+    }
+
+    const base = "{{ url_for('static', filename='qr/') }}";
+    const finalUrl = `${base}${qrFile}`;
+
+    console.log("Final QR URL:", finalUrl);
+
+    document.getElementById("qrModalReceipt").innerText = "Receipt ID: " + receipt;
+    document.getElementById("qrModalAmount").innerText = parseFloat(amount).toLocaleString();
+    document.getElementById("qrModalPayout").innerText = parseFloat(payout).toLocaleString();
+
+    document.getElementById("qrModalImgWrapper").innerHTML = `
+        <img src="${finalUrl}" class="mx-auto w-48 h-48 rounded shadow"
+        onerror="this.outerHTML='<p class=\'text-gray-500 italic\'>QR not found</p>';"/>
+    `;
+
+    document.getElementById("qrModal").classList.remove("hidden");
+    document.getElementById("qrModal").classList.add("flex");
+}
+
+// ==========================================================
+// CLOSE QR MODAL
+// ==========================================================
+function closeQrModal() {
+    const modal = document.getElementById("qrModal");
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+}
+
+// ==========================================================
+// CLICK OUTSIDE TO CLOSE
+// ==========================================================
+document.getElementById("qrModal").addEventListener("click", function(e) {
+    if (e.target === this) {
+        closeQrModal();
+    }
+});
+</script>
+
+<style>
+.glass-card {
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.3);
+}
+.font-heading {
+    font-family: 'Orbitron', sans-serif;
+}
+</style>
+
+{% endblock %}

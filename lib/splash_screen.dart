@@ -101,7 +101,7 @@ class _SplashScreenState extends State<SplashScreen> with TickerProviderStateMix
                 child: Column(
                   children: const [
                     Text(
-                      'GAC COCKPIT ARENA',
+                      'D - OCBS',
                       style: TextStyle(
                         fontSize: 28,
                         fontWeight: FontWeight.bold,

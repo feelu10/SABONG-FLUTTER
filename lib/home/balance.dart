@@ -94,7 +94,7 @@ class _BalanceLogsPageState extends State<BalanceLogsPage> {
       ),
       body: Column(
         children: [
-          // 🔽 Filter Dropdown
+          // Filter Dropdown
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(

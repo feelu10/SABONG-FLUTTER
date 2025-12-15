@@ -71,9 +71,6 @@ class _ScannerPageState extends State<ScannerPage> {
         }),
       );
 
-      // print("✅ Response status: ${res.statusCode}");
-      // print("📦 Response body: ${res.body}");
-
       if (!mounted) return;
       Navigator.of(context).pop();
 
@@ -95,8 +92,9 @@ class _ScannerPageState extends State<ScannerPage> {
             "Side: ${side.toString().toUpperCase()}\n"
             "Status: ${status.toUpperCase()}";
 
-        // Always print for win/draw/cancelled, not only win!
         data['receipt_id'] = receiptId;
+        data['event_name'] = data['event_name'] ?? '';   // ⭐ FIX HERE
+
         if (!mounted) return;
         await Navigator.push(
           context,
@@ -112,7 +110,6 @@ class _ScannerPageState extends State<ScannerPage> {
         message = data['error'] ?? "Unknown server error.";
       }
     } catch (e) {
-      // print("❌ Exception occurred: $e");
       if (!mounted) return;
       Navigator.of(context).pop();
       title = "Network Error";
@@ -125,7 +122,7 @@ class _ScannerPageState extends State<ScannerPage> {
       barrierDismissible: false,
       builder: (_) => PopScope(
         canPop: false,
-        onPopInvoked: (didPop) {}, // Prevent pop (replacement for WillPopScope)
+        onPopInvoked: (didPop) {},
         child: AlertDialog(
           title: Text(title),
           content: Text(message),
